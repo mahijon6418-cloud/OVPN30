@@ -1,0 +1,114 @@
+name: Build OVPN30
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build OVPN30 APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout OVPN30 project
+        uses: actions/checkout@v4
+
+      - name: Checkout OpenVPN XOR engine
+        uses: actions/checkout@v4
+        with:
+          repository: lawtancool/ics-openvpn-xor
+          ref: v0.7.37-xor
+          submodules: recursive
+          path: upstream
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Prepare Gradle
+        run: |
+          chmod +x upstream/gradlew
+          mkdir -p ~/.gradle
+          cat > ~/.gradle/gradle.properties <<'EOF'
+          icsopenvpnDebugSign=true
+          org.gradle.jvmargs=-Xmx4096M
+          org.gradle.daemon=false
+          EOF
+
+      - name: Install Android build tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "cmake;3.18.1"
+
+      - name: Install OVPN30 icon
+        run: |
+          set -e
+          ICON="$GITHUB_WORKSPACE/assets/ovpn30-icon.png"
+          test -f "$ICON"
+
+          mkdir -p upstream/main/src/main/res/mipmap-mdpi
+          mkdir -p upstream/main/src/main/res/mipmap-hdpi
+          mkdir -p upstream/main/src/main/res/mipmap-xhdpi
+          mkdir -p upstream/main/src/main/res/mipmap-xxhdpi
+          mkdir -p upstream/main/src/main/res/mipmap-xxxhdpi
+
+          # ImageMagick is preinstalled on GitHub's Ubuntu runner.
+          magick "$ICON" -resize 48x48   upstream/main/src/main/res/mipmap-mdpi/ic_launcher.png
+          magick "$ICON" -resize 72x72   upstream/main/src/main/res/mipmap-hdpi/ic_launcher.png
+          magick "$ICON" -resize 96x96   upstream/main/src/main/res/mipmap-xhdpi/ic_launcher.png
+          magick "$ICON" -resize 144x144 upstream/main/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          magick "$ICON" -resize 192x192 upstream/main/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
+          # Use the same artwork for round launcher icon.
+          cp upstream/main/src/main/res/mipmap-mdpi/ic_launcher.png upstream/main/src/main/res/mipmap-mdpi/ic_launcher_round.png
+          cp upstream/main/src/main/res/mipmap-hdpi/ic_launcher.png upstream/main/src/main/res/mipmap-hdpi/ic_launcher_round.png
+          cp upstream/main/src/main/res/mipmap-xhdpi/ic_launcher.png upstream/main/src/main/res/mipmap-xhdpi/ic_launcher_round.png
+          cp upstream/main/src/main/res/mipmap-xxhdpi/ic_launcher.png upstream/main/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
+          cp upstream/main/src/main/res/mipmap-xxxhdpi/ic_launcher.png upstream/main/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+
+      - name: Set app name to OVPN30
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for p in Path("upstream/main/src/main/res").rglob("strings.xml"):
+              s=p.read_text(encoding="utf-8")
+              import re
+              s=re.sub(r'(<string\s+name="app"[^>]*>).*?(</string>)', r'\1OVPN30\2', s, count=1)
+              p.write_text(s, encoding="utf-8")
+          PY
+
+      - name: Build universal debug APK
+        working-directory: upstream
+        run: ./gradlew assembleUiOvpn2Release --stacktrace --no-daemon
+
+      - name: Locate universal APK
+        run: |
+          set -e
+          APK=$(find upstream/main/build/outputs/apk -type f -name '*universal*.apk' | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "Universal APK not found. Generated APKs:"
+            find upstream/main/build/outputs/apk -type f -name '*.apk' -print
+            exit 1
+          fi
+          mkdir -p release
+          cp "$APK" release/OVPN30.apk
+          echo "APK: $APK"
+
+      - name: Upload OVPN30 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OVPN30-APK
+          path: release/OVPN30.apk
+          if-no-files-found: error
