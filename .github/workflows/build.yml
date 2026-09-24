@@ -5,23 +5,32 @@ on:
   push:
     branches:
       - main
+      - master
 
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Build OVPN30 APK
     runs-on: ubuntu-latest
 
     steps:
+
+      # --------------------------------
+      # 1. دریافت سورس OpenVPN XOR
+      # --------------------------------
       - name: Checkout OpenVPN XOR
         uses: actions/checkout@v4
         with:
           repository: lawtancool/ics-openvpn-xor
           ref: master
-          submodules: true
+          submodules: recursive
           path: upstream
 
+      # --------------------------------
+      # 2. نصب Java 17
+      # --------------------------------
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
@@ -29,33 +38,140 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      # --------------------------------
+      # 3. نصب Android SDK
+      # --------------------------------
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools'
+          packages: platform-tools
 
+      # --------------------------------
+      # 4. آماده‌سازی Gradle
+      # --------------------------------
       - name: Prepare Gradle
         working-directory: upstream
         run: |
           chmod +x gradlew
-          mkdir -p ~/.gradle
-          echo "icsopenvpnDebugSign=true" >> ~/.gradle/gradle.properties
-          echo "org.gradle.jvmargs=-Xmx2048M" >> ~/.gradle/gradle.properties
 
-      - name: Build OVPN30
+          mkdir -p ~/.gradle
+
+          cat > ~/.gradle/gradle.properties <<'EOF'
+          icsopenvpnDebugSign=true
+          org.gradle.jvmargs=-Xmx4096M
+          org.gradle.daemon=false
+          EOF
+
+      # --------------------------------
+      # 5. نمایش ساختار پروژه
+      # --------------------------------
+      - name: Show Gradle projects
         working-directory: upstream
         run: |
-          ./gradlew assembleUiOvpn2Release --stacktrace
+          ./gradlew projects --stacktrace
 
-      - name: Find APK
+      # --------------------------------
+      # 6. نمایش Taskهای Build
+      # --------------------------------
+      - name: Show APK build tasks
+        working-directory: upstream
         run: |
-          find upstream -type f -name "*.apk" -print
+          ./gradlew tasks --all --stacktrace > gradle-tasks.txt
+          cat gradle-tasks.txt
 
-      - name: Upload APK
+      # --------------------------------
+      # 7. پیدا کردن Task صحیح و Build
+      # --------------------------------
+      - name: Build OVPN30
+        working-directory: upstream
+        shell: bash
+        run: |
+
+          echo "======================================"
+          echo "Searching for OpenVPN APK build task"
+          echo "======================================"
+
+          TASK=""
+
+          if ./gradlew tasks --all | grep -q "assembleUiOvpn2Release"; then
+            TASK="assembleUiOvpn2Release"
+
+          elif ./gradlew tasks --all | grep -q "assembleUiOvpn23Release"; then
+            TASK="assembleUiOvpn23Release"
+
+          elif ./gradlew tasks --all | grep -q "assembleOvpn2Release"; then
+            TASK="assembleOvpn2Release"
+
+          elif ./gradlew tasks --all | grep -q "assembleRelease"; then
+            TASK="assembleRelease"
+          fi
+
+          if [ -z "$TASK" ]; then
+            echo "ERROR: No compatible APK build task found."
+            echo ""
+            echo "Available assemble tasks:"
+            ./gradlew tasks --all | grep -i assemble || true
+            exit 1
+          fi
+
+          echo "======================================"
+          echo "Using Gradle task:"
+          echo "$TASK"
+          echo "======================================"
+
+          ./gradlew "$TASK" --stacktrace --no-daemon
+
+      # --------------------------------
+      # 8. پیدا کردن APK
+      # --------------------------------
+      - name: Find APK
+        working-directory: upstream
+        run: |
+          echo "======================================"
+          echo "APK files:"
+          echo "======================================"
+
+          find . \
+            -type f \
+            \( -name "*.apk" -o -name "*.aab" \) \
+            -print
+
+      # --------------------------------
+      # 9. تغییر نام APK
+      # --------------------------------
+      - name: Prepare APK
+        working-directory: upstream
+        shell: bash
+        run: |
+
+          mkdir -p ../release
+
+          APK=$(find . \
+            -type f \
+            -name "*.apk" \
+            | grep -E "universal|release" \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            APK=$(find . -type f -name "*.apk" | head -n 1)
+          fi
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+
+          echo "Found APK:"
+          echo "$APK"
+
+          cp "$APK" ../release/OVPN30-Scramble.apk
+
+      # --------------------------------
+      # 10. Upload APK
+      # --------------------------------
+      - name: Upload OVPN30 APK
         uses: actions/upload-artifact@v4
         with:
-          name: OVPN30-APK
-          path: |
-            upstream/**/build/outputs/apk/**/*.apk
-            upstream/**/build/outputs/apk/*.apk
+          name: OVPN30-Scramble-APK
+          path: release/OVPN30-Scramble.apk
           if-no-files-found: error
