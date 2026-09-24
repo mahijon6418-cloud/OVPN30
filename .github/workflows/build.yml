@@ -17,7 +17,9 @@ jobs:
 
     steps:
 
+      # ==========================================
       # 1. دریافت سورس OpenVPN XOR
+      # ==========================================
       - name: Checkout OpenVPN XOR
         uses: actions/checkout@v4
         with:
@@ -26,7 +28,9 @@ jobs:
           submodules: recursive
           path: upstream
 
-      # 2. نصب Java 17
+      # ==========================================
+      # 2. Java 17
+      # ==========================================
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
@@ -34,19 +38,42 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      # 3. نصب Android SDK
+      # ==========================================
+      # 3. Android SDK
+      # ==========================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
-        with:
-          packages: |
-            platform-tools
-            platforms;android-35
-            build-tools;35.0.0
 
-      # 4. آماده‌سازی Gradle
+      # ==========================================
+      # 4. نصب SDK + قبول License
+      # ==========================================
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          set -e
+
+          echo "Accepting Android SDK licenses..."
+
+          yes | sdkmanager --licenses || true
+
+          echo "Installing Android SDK components..."
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+          echo "Android SDK ready."
+
+      # ==========================================
+      # 5. آماده سازی Gradle
+      # ==========================================
       - name: Prepare Gradle
         working-directory: upstream
+        shell: bash
         run: |
+          set -e
+
           chmod +x gradlew
 
           mkdir -p ~/.gradle
@@ -57,29 +84,44 @@ jobs:
           org.gradle.daemon=false
           EOF
 
-      # 5. نمایش پروژه‌ها
+      # ==========================================
+      # 6. نمایش پروژه های Gradle
+      # ==========================================
       - name: Show Gradle projects
-        working-directory: upstream
-        run: |
-          ./gradlew projects --stacktrace
-
-      # 6. پیدا کردن Task ساخت APK
-      - name: Find Build Task
         working-directory: upstream
         shell: bash
         run: |
+          ./gradlew projects --stacktrace
+
+      # ==========================================
+      # 7. پیدا کردن Task های APK
+      # ==========================================
+      - name: Find APK build tasks
+        working-directory: upstream
+        shell: bash
+        run: |
+          set -e
+
           ./gradlew tasks --all --stacktrace > gradle-tasks.txt
 
-          echo "Available assemble tasks:"
+          echo "======================================"
+          echo "AVAILABLE BUILD TASKS"
+          echo "======================================"
+
           grep -i "assemble" gradle-tasks.txt || true
 
-      # 7. ساخت APK
+      # ==========================================
+      # 8. Build APK
+      # ==========================================
       - name: Build APK
         working-directory: upstream
         shell: bash
         run: |
-
           set -e
+
+          echo "======================================"
+          echo "SEARCHING FOR APK BUILD TASK"
+          echo "======================================"
 
           TASK=""
 
@@ -100,24 +142,36 @@ jobs:
           fi
 
           if [ -z "$TASK" ]; then
-            echo "ERROR: No APK build task found."
+            echo "ERROR: No compatible APK build task found."
+            echo ""
+            echo "Available assemble tasks:"
+            ./gradlew tasks --all | grep -i assemble || true
             exit 1
           fi
 
-          echo "Using build task:"
+          echo "Selected Gradle task:"
           echo "$TASK"
+
+          echo "======================================"
+          echo "BUILDING APK"
+          echo "======================================"
 
           ./gradlew "$TASK" \
             --stacktrace \
             --no-daemon
 
-      # 8. پیدا کردن APK
+      # ==========================================
+      # 9. پیدا کردن APK
+      # ==========================================
       - name: Locate APK
         working-directory: upstream
         shell: bash
         run: |
+          set -e
 
-          echo "APK files found:"
+          echo "======================================"
+          echo "SEARCHING FOR APK"
+          echo "======================================"
 
           find . \
             -type f \
@@ -130,17 +184,17 @@ jobs:
             -type f \
             -name "*.apk" \
             | grep -E "release|universal" \
-            | head -n 1)
+            | head -n 1 || true)
 
           if [ -z "$APK" ]; then
             APK=$(find . \
               -type f \
               -name "*.apk" \
-              | head -n 1)
+              | head -n 1 || true)
           fi
 
           if [ -z "$APK" ]; then
-            echo "ERROR: No APK generated."
+            echo "ERROR: APK was not generated."
             exit 1
           fi
 
@@ -149,9 +203,35 @@ jobs:
 
           cp "$APK" ../unsigned/OVPN30-unsigned.apk
 
-      # 9. ساخت Keystore
-      - name: Create Signing Keystore
+          echo "Unsigned APK copied successfully."
+
+      # ==========================================
+      # 10. بررسی APK اولیه
+      # ==========================================
+      - name: Inspect unsigned APK
+        shell: bash
         run: |
+          set -e
+
+          echo "======================================"
+          echo "UNSIGNED APK"
+          echo "======================================"
+
+          ls -lh unsigned/OVPN30-unsigned.apk
+
+          file unsigned/OVPN30-unsigned.apk
+
+          unzip -t unsigned/OVPN30-unsigned.apk
+
+      # ==========================================
+      # 11. ساخت Keystore
+      # ==========================================
+      - name: Create signing keystore
+        shell: bash
+        run: |
+          set -e
+
+          echo "Creating OVPN30 signing key..."
 
           keytool -genkeypair \
             -v \
@@ -164,30 +244,37 @@ jobs:
             -keypass "ovpn30password" \
             -dname "CN=OVPN30, OU=OVPN30, O=OVPN30, L=Unknown, ST=Unknown, C=US"
 
-      # 10. پیدا کردن Build Tools
-      - name: Prepare APK Tools
-        id: apktools
+          echo "Keystore created."
+
+      # ==========================================
+      # 12. پیدا کردن zipalign و apksigner
+      # ==========================================
+      - name: Find APK signing tools
+        shell: bash
         run: |
+          set -e
 
           SDK="$ANDROID_HOME"
 
           ZIPALIGN=$(find "$SDK/build-tools" \
-            -name zipalign \
+            -type f \
+            -name "zipalign" \
             | sort -V \
             | tail -n 1)
 
           APKSIGNER=$(find "$SDK/build-tools" \
-            -name apksigner \
+            -type f \
+            -name "apksigner" \
             | sort -V \
             | tail -n 1)
 
           if [ -z "$ZIPALIGN" ]; then
-            echo "zipalign not found"
+            echo "ERROR: zipalign not found."
             exit 1
           fi
 
           if [ -z "$APKSIGNER" ]; then
-            echo "apksigner not found"
+            echo "ERROR: apksigner not found."
             exit 1
           fi
 
@@ -200,11 +287,19 @@ jobs:
           echo "apksigner:"
           echo "$APKSIGNER"
 
-      # 11. Zipalign
+      # ==========================================
+      # 13. Zipalign
+      # ==========================================
       - name: Zipalign APK
+        shell: bash
         run: |
+          set -e
 
-          mkdir -p "$GITHUB_WORKSPACE/release"
+          mkdir -p release
+
+          echo "======================================"
+          echo "ZIPALIGN APK"
+          echo "======================================"
 
           "$ZIPALIGN" \
             -f \
@@ -213,9 +308,19 @@ jobs:
             "$GITHUB_WORKSPACE/unsigned/OVPN30-unsigned.apk" \
             "$GITHUB_WORKSPACE/release/OVPN30-aligned.apk"
 
-      # 12. Sign APK
+          echo "Zipalign completed."
+
+      # ==========================================
+      # 14. Sign APK
+      # ==========================================
       - name: Sign APK
+        shell: bash
         run: |
+          set -e
+
+          echo "======================================"
+          echo "SIGNING APK"
+          echo "======================================"
 
           "$APKSIGNER" sign \
             --ks "$RUNNER_TEMP/ovpn30-release.keystore" \
@@ -225,9 +330,15 @@ jobs:
             --out "$GITHUB_WORKSPACE/release/OVPN30-Scramble.apk" \
             "$GITHUB_WORKSPACE/release/OVPN30-aligned.apk"
 
-      # 13. Verify Signature
-      - name: Verify APK Signature
+          echo "APK signing completed."
+
+      # ==========================================
+      # 15. بررسی امضای APK
+      # ==========================================
+      - name: Verify APK signature
+        shell: bash
         run: |
+          set -e
 
           echo "======================================"
           echo "VERIFYING APK SIGNATURE"
@@ -237,28 +348,52 @@ jobs:
             --verbose \
             "$GITHUB_WORKSPACE/release/OVPN30-Scramble.apk"
 
+          echo ""
           echo "======================================"
           echo "APK SIGNATURE OK"
           echo "======================================"
 
-      # 14. بررسی APK
-      - name: Check APK
+      # ==========================================
+      # 16. بررسی نهایی APK
+      # ==========================================
+      - name: Final APK inspection
+        shell: bash
         run: |
+          set -e
+
+          APK="$GITHUB_WORKSPACE/release/OVPN30-Scramble.apk"
 
           echo "======================================"
           echo "FINAL APK"
           echo "======================================"
 
-          ls -lh "$GITHUB_WORKSPACE/release/OVPN30-Scramble.apk"
+          ls -lh "$APK"
 
-          unzip -l \
-            "$GITHUB_WORKSPACE/release/OVPN30-Scramble.apk" \
+          file "$APK"
+
+          echo ""
+          echo "Testing ZIP structure..."
+
+          unzip -t "$APK"
+
+          echo ""
+          echo "Signature files:"
+
+          unzip -l "$APK" \
             | grep -E "META-INF/.*(RSA|SF)" || true
 
-      # 15. Upload APK
-      - name: Upload OVPN30 APK
+          echo ""
+          echo "SHA256:"
+
+          sha256sum "$APK"
+
+      # ==========================================
+      # 17. آپلود APK
+      # ==========================================
+      - name: Upload OVPN30 Signed APK
         uses: actions/upload-artifact@v4
         with:
           name: OVPN30-Scramble-Signed
           path: release/OVPN30-Scramble.apk
           if-no-files-found: error
+          retention-days: 30
